@@ -1,0 +1,532 @@
+---
+title: "Figures and Tables for Laugier and Stankiewicz JAS"
+author: "Elise J. Laugier"
+date: "2026-03-17"
+output: github_document 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## Setup
+
+Connect to data folder. Enter your path here:
+
+```{r data}
+#getwd()
+setwd("/Users/jakoby/Dropbox/R/LaugierAndStankiewiczJAS/Laugier-and-Stankiewicz_JAS")
+```
+
+Load libraries
+
+```{r libraries}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(cowplot)
+library(viridis)
+library(writexl)
+```
+
+## Figure 1
+
+```{r Fig1, fig.width=7, fig.height=5, dpi = 500}
+df <- read.csv("TableA.1.csv")
+
+# Fig 1 A: RELATIVE Concentrations by Sample ----
+
+# 1) Analyst-level averages (jitter)
+dat_avg <- df %>%
+  group_by(Sample, Method, Analyst, Replicate) %>%
+  summarise(RelativePer1g = mean(RelativePer1g, na.rm = TRUE), .groups = "drop")
+
+# 2) Replicate-combined values (boxplots + stats)
+replicate_means <- dat_avg %>%
+  group_by(Sample, Method, Replicate) %>%
+  summarise(RelativePer1g = mean(RelativePer1g, na.rm = TRUE), .groups = "drop")
+
+# 3) Wilcoxon tests per Sample (unpaired)
+wilcox_relative_long <- replicate_means %>%
+  group_by(Sample) %>%
+  summarise(
+    p_10 = wilcox.test(
+      RelativePer1g[Method %in% c("10 CB","10 SPT")] ~ Method[Method %in% c("10 CB","10 SPT")], 
+      paired = FALSE)$p.value,
+    p_16 = wilcox.test(
+      RelativePer1g[Method %in% c("16 CB","16 SPT")] ~ Method[Method %in% c("16 CB","16 SPT")], 
+      paired = FALSE)$p.value,
+    p_10CB_16SPT = wilcox.test(RelativePer1g[Method %in% c("10 CB","16 SPT")] ~ Method[Method %in% c("10 CB","16 SPT")],
+      paired = FALSE)$p.value,
+    .groups = "drop")
+
+# 4) y-position per facet (max of both datasets)
+ymax_by_sample <- bind_rows(
+  replicate_means %>% transmute(Sample, y = RelativePer1g),
+  dat_avg %>% transmute(Sample, y = RelativePer1g)) %>%
+  group_by(Sample) %>%
+  summarise(ymax = max(y, na.rm = TRUE), .groups = "drop")
+
+# 5) Annotation table & significance codes
+pvals_annot <- wilcox_relative_long %>%
+  pivot_longer(cols = starts_with("p_"), names_to = "comparison", values_to = "p") %>%
+  mutate(group1 = case_when(comparison == "p_10" ~ "10 CB", comparison == "p_16" ~ "16 CB", 
+                            comparison == "p_10CB_16SPT" ~ "10 CB", TRUE ~ NA_character_),
+    group2 = case_when(comparison == "p_10" ~ "10 SPT", comparison == "p_16" ~ "16 SPT", 
+                       comparison == "p_10CB_16SPT" ~ "16 SPT", TRUE ~ NA_character_),
+    offset = case_when(comparison == "p_10" ~ 1.08, comparison == "p_16" ~ 1.16, 
+                       comparison == "p_10CB_16SPT" ~ 1.24,TRUE ~ 1.08),
+    sig = case_when(is.na(p)  ~ NA_character_, p < 0.001 ~ "***", p < 0.01  ~ "**", p < 0.05  ~ "*",
+      TRUE ~ "ns")) %>%
+  left_join(ymax_by_sample, by = "Sample") %>%
+  mutate(y.position = ymax * offset) %>%
+  select(Sample, group1, group2, p, y.position, sig)
+
+# 6) Plot
+r_plot <- ggplot() +
+  geom_boxplot(data = replicate_means, aes(x = Method, y = RelativePer1g),
+    linewidth = 0.3, outlier.size = 1.2,) +
+  geom_jitter(data = dat_avg, aes(x = Method, y = RelativePer1g, fill = Analyst),
+    shape = 21, color = "black", position = position_jitter(width = 0.12, height = 0),
+    size = 1.2, alpha = 0.9) +
+  scale_fill_manual(values = c("#bf812d", "#2EBBBF")) +
+  facet_wrap(~ Sample, nrow = 1, scales = "free_y") +
+  scale_y_continuous(breaks = seq(0, 250000, by = 50000), labels = function(x) x / 1000) +
+  labs(title = "Relative Concentrations",
+    x = "FOV Count & Mounting Medium",
+    y = "Relative # of spherulites\n per g of sediment (1000s)",
+    fill = "Analyst") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1), legend.position = "none") +
+  ggpubr::stat_pvalue_manual(pvals_annot, label = "sig", xmin = "group1", xmax = "group2",
+    y.position = "y.position", tip.length = 0.01, size = 4)
+
+#r_plot
+
+# Fig 1 B: AREA-CORRECTED Concentrations by Sample ----
+
+# 1) Analyst-level averages (jittered points)
+dat_avg <- df %>%
+  group_by(Sample, Method, Analyst, Replicate) %>%
+  summarise(MillionsPer1g = mean(MillionsPer1g, na.rm = TRUE), .groups = "drop")
+
+# 2) Replicate-combined values (boxplots + stats; ignore Analyst)
+replicate_means <- dat_avg %>%
+  group_by(Sample, Method, Replicate) %>%
+  summarise(MillionsPer1g = mean(MillionsPer1g, na.rm = TRUE), .groups = "drop")
+
+# 3) Wilcoxon tests per Sample (unpaired) using replicate-combined values
+wilcox_millions_long <- replicate_means %>%
+  group_by(Sample) %>%
+  summarise(
+    p_10 = wilcox.test(MillionsPer1g[Method %in% c("10 CB","10 SPT")] ~ Method[Method %in% c("10 CB","10 SPT")],
+      paired = FALSE)$p.value,
+    p_16 = wilcox.test(MillionsPer1g[Method %in% c("16 CB","16 SPT")] ~ Method[Method %in% c("16 CB","16 SPT")],
+      paired = FALSE)$p.value,
+    p_10CB_16SPT = wilcox.test(MillionsPer1g[Method %in% c("10 CB","16 SPT")] ~ Method[Method %in% c("10 CB","16 SPT")],
+      paired = FALSE)$p.value,
+    .groups = "drop")
+
+# 4) y-position per facet (uses the max of both replicate means and analyst points)
+ymax_by_sample <- bind_rows(
+  replicate_means %>% transmute(Sample, y = MillionsPer1g),
+  dat_avg %>% transmute(Sample, y = MillionsPer1g)) %>%
+  group_by(Sample) %>%
+  summarise(ymax = max(y, na.rm = TRUE), .groups = "drop")
+
+# 5) Annotation table (one row per Sample x comparison) & significance codes
+pvals_annot <- wilcox_millions_long %>%
+  pivot_longer(cols = starts_with("p_"), names_to = "comparison", values_to = "p") %>%
+  mutate(
+    group1 = case_when(comparison == "p_10" ~ "10 CB", comparison == "p_16" ~ "16 CB",
+      comparison == "p_10CB_16SPT" ~ "10 CB", TRUE ~ NA_character_),
+    group2 = case_when(comparison == "p_10" ~ "10 SPT", comparison == "p_16" ~ "16 SPT",
+      comparison == "p_10CB_16SPT" ~ "16 SPT",TRUE ~ NA_character_),
+    offset = case_when(comparison == "p_10" ~ 1.08, comparison == "p_16" ~ 1.16,
+      comparison == "p_10CB_16SPT" ~ 1.24, TRUE ~ 1.08),
+    sig = case_when(is.na(p)  ~ NA_character_, p < 0.001 ~ "***", p < 0.01  ~ "**", p < 0.05  ~ "*",
+      TRUE ~ "ns")) %>%
+  left_join(ymax_by_sample, by = "Sample") %>%
+  mutate(y.position = ymax * offset) %>%
+  select(Sample, group1, group2, p, y.position, sig)
+
+# 6) Plot
+q_plot <- ggplot() +
+  geom_boxplot(data = replicate_means, aes(x = Method, y = MillionsPer1g),
+    linewidth = 0.3, outlier.size = 1.2, ) +
+  geom_jitter(data = dat_avg, aes(x = Method, y = MillionsPer1g, fill = Analyst),
+    shape = 21, color = "black", position = position_jitter(width = 0.12, height = 0),
+    size = 1.2, alpha = 0.9) +
+  scale_fill_manual(values = c("#bf812d", "#2EBBBF")) +
+  facet_wrap(~ Sample, nrow = 1, scales = "free_y") +
+  labs(title = "Area-Corrected Concentrations",
+    x = "FOV Count & Mounting Medium",
+    y = "Millions of spherulites\n per g of sediment",
+    fill = "Analyst") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1), legend.position = "none") +
+  ggpubr::stat_pvalue_manual(pvals_annot, label = "sig", xmin = "group1", xmax = "group2",
+    y.position = "y.position", tip.length = 0.01, size = 4)
+
+#q_plot
+
+# Combine A & B into one using COWPLOT ----
+stacked_plot <- plot_grid(r_plot,q_plot, ncol = 1, align = "v", rel_heights = c(1, 1))
+
+stacked_plot
+```
+
+## Figure 2
+```{r Fig2, fig.width=5, fig.height=4,dpi = 300}
+
+df <- read.csv("TableA.1.csv")
+
+# Average within replicate ----
+replicate_means <- df %>%
+  group_by(Sample, Method, Replicate) %>%
+  summarise(
+    MillionsPer1g = mean(MillionsPer1g, na.rm = TRUE),
+    RelativePer1g = mean(RelativePer1g, na.rm = TRUE),
+    .groups = "drop")
+
+# Conversion constants ----
+y       <- 0.005309
+y_sd    <- 0.000804
+ratio10 <- 0.006599526 / 0.004124704
+
+# Add converted values ----
+replicate_means2 <- replicate_means %>%
+  mutate(
+    Y_conversion = if_else(Method == "16 CB", (RelativePer1g / y) / 1e6, NA_real_),
+    Y_conv_low = if_else(Method == "16 CB", (RelativePer1g / (y + y_sd)) / 1e6, NA_real_),
+    Y_conv_high = if_else(Method == "16 CB", (RelativePer1g / (y - y_sd)) / 1e6, NA_real_),
+    Y_conversion10 = if_else(Method == "10 CB", ((RelativePer1g * ratio10) / y) / 1e6, NA_real_),
+    Y_conv10_low = if_else(Method == "10 CB", ((RelativePer1g * ratio10) / (y + y_sd)) / 1e6, NA_real_),
+    Y_conv10_high = if_else(Method == "10 CB",((RelativePer1g * ratio10) / (y - y_sd)) / 1e6, NA_real_))
+
+# Factor setup ----
+replicate_means3 <- replicate_means2 %>% mutate(Sample = factor(Sample))
+
+sample_levels <- levels(replicate_means3$Sample)
+
+series_levels <- c("16 CB (observed)", "16 SPT (observed)", 
+                   "16 CB (converted)", "10 CB (converted)")
+
+set.seed(123)
+
+# 16 CB observed (MillionsPer1g) ----
+cb16_rep <- replicate_means3 %>% filter(Method == "16 CB") %>%
+  transmute(Sample = factor(Sample, levels = sample_levels), Replicate, 
+    mid = MillionsPer1g, Series = factor("16 CB (observed)", levels = series_levels))
+
+cb16_sum <- cb16_rep %>% group_by(Sample, Series) %>%
+  summarise(mean_obs = mean(mid, na.rm = TRUE),
+    sd_obs   = sd(mid, na.rm = TRUE), mid  = mean_obs,
+    low  = mean_obs - sd_obs, high = mean_obs + sd_obs,
+    .groups = "drop") %>%
+  select(Sample, Series, mid, low, high)
+
+# 16 SPT observed ----
+spt_rep <- replicate_means3 %>%
+  filter(Method == "16 SPT") %>%
+  transmute(Sample = factor(Sample, levels = sample_levels), Replicate,
+    mid = MillionsPer1g, Series = factor("16 SPT (observed)", levels = series_levels))
+
+spt_sum <- spt_rep %>%
+  group_by(Sample, Series) %>%
+  summarise(mean_obs = mean(mid, na.rm = TRUE), sd_obs   = sd(mid, na.rm = TRUE),
+    mid  = mean_obs, low  = mean_obs - sd_obs, high = mean_obs + sd_obs,
+    .groups = "drop") %>% select(Sample, Series, mid, low, high)
+
+# Converted replicate values ----
+conv_rep <- replicate_means3 %>%
+  transmute(Sample = factor(Sample, levels = sample_levels),
+    Replicate,
+    mid  = coalesce(Y_conversion, Y_conversion10),
+    low  = coalesce(Y_conv_low, Y_conv10_low),
+    high = coalesce(Y_conv_high, Y_conv10_high),
+    Series = case_when(
+      !is.na(Y_conversion)   ~ "16 CB (converted)",
+      !is.na(Y_conversion10) ~ "10 CB (converted)",
+      TRUE ~ NA_character_)) %>%
+  filter(!is.na(Series)) %>%
+  mutate(Series = factor(Series, levels = series_levels))
+
+conv_sum <- conv_rep %>%
+  group_by(Sample, Series) %>%
+  summarise(mid  = mean(mid), low  = mean(low), high = mean(high),
+    .groups = "drop")
+
+# Combine summaries ----
+sum_df <- bind_rows(cb16_sum, spt_sum, conv_sum) %>%
+  mutate(x_base = as.numeric(Sample),
+    x_plot = case_when(
+      Series == "16 CB (observed)"  ~ x_base - 0.25,
+      Series == "16 SPT (observed)" ~ x_base - 0.08,
+      Series == "16 CB (converted)" ~ x_base + 0.08,
+      Series == "10 CB (converted)" ~ x_base + 0.25))
+
+# Replicate positions ----
+rep_df <- bind_rows(cb16_rep %>% mutate(low = mid, high = mid),
+  spt_rep  %>% mutate(low = mid, high = mid),conv_rep) %>%
+  mutate(
+    x_base = as.numeric(Sample),
+    x_dodge = case_when(
+      Series == "16 CB (observed)"  ~ -0.25,
+      Series == "16 SPT (observed)" ~ -0.08,
+      Series == "16 CB (converted)" ~  0.08,
+      Series == "10 CB (converted)" ~  0.25),
+    x_jitter = runif(n(), -0.04, 0.04),
+    x_plot = x_base + x_dodge + x_jitter)
+
+# Plot ----
+
+p <- ggplot() +
+  geom_point(data = rep_df,
+    aes(x = x_plot, y = mid, fill = Series, color = Series),
+    shape = 21, size = 1.6, alpha = 0.4, stroke = 0.2) +
+  geom_errorbar(data = rep_df %>% filter(Series %in% c("16 CB (converted)", "10 CB (converted)")),
+    aes(x = x_plot, y = mid, ymin = low, ymax = high, color = Series),
+    width = 0.015, alpha = 0.4, linewidth = 0.2) +
+  geom_linerange(data = sum_df, aes(x = x_plot, ymin = low, ymax = high, color = Series),
+    linewidth = 0.75) +
+  geom_point(data = sum_df, aes(x = x_plot, y = mid, fill = Series, color = Series),
+    shape = 21, size = 3, stroke = 0.75) +
+  scale_x_continuous(breaks = seq_along(sample_levels), labels = sample_levels) +
+  
+  scale_color_manual(breaks = series_levels,
+    values = c(
+      "16 CB (observed)"  = "gray70", "16 SPT (observed)" = "grey30",
+      "16 CB (converted)" = "#F05C54", "10 CB (converted)" = "#23A9B0")) +
+  
+  scale_fill_manual(
+    values = c(
+      "16 CB (observed)"  = "gray85", "16 SPT (observed)" = "grey70",
+      "16 CB (converted)" = "#ed8680", "10 CB (converted)" = "#74d6db"),
+    guide = "none") +
+  
+  labs(x = "Sample", y = "Spherulite concentration (millions per g)", color = NULL) +
+  theme_bw(base_size = 11) +
+  guides(color = guide_legend(nrow = 2)) +
+  theme(legend.position = "top",
+    panel.grid.major.x = element_blank(), panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 30, hjust = 1))
+
+print(p)
+```
+
+## Figure 4
+
+```{r Fig4, fig.width=10, fig.height=5, dpi = 500}
+
+df <- read.csv("TableA.4.csv")
+# Reference stats
+mu  <- 14.9
+sd0 <- 3.0
+ymin_ref <- 10.5
+ymax_ref <- 18.6
+
+# ---- plot A ----
+
+# viridis palette
+pal <- viridis(n = 7, option = "viridis") 
+
+plot_a <- ggplot(df, aes(Hour, MillionsPer1g, color = SampleNo)) +
+  
+  # --- reference data ---
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = mu - sd0, ymax = mu + sd0,
+           alpha = 0.08, fill = "grey30") +
+  geom_hline(yintercept = mu, linewidth = 0.8, alpha = 0.35, color = "grey30") +
+  geom_hline(yintercept = c(ymin_ref, ymax_ref),
+             linetype = "dotted", linewidth = 0.7, alpha = 0.35, color = "grey30") +
+  # --- plot data ---
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.8, na.rm = TRUE) +
+  geom_point(size = 2.8, na.rm = TRUE, shape = 1, color = "black") +
+  # ---  references labels ---
+  annotate("text", x = 5.2, y = mu, label = "Mean", hjust = 0, size = 3.3, color = "grey25") +
+  annotate("text", x = 5.2, y = mu + sd0, label = "+1 SD", hjust = 0, size = 3.1, color = "grey25") +
+  annotate("text", x = 5.2, y = mu - sd0, label = "-1 SD", hjust = 0, size = 3.1, color = "grey25") +
+  annotate("text", x = 5.2, y = ymax_ref, label = "Max", hjust = 0, size = 3.1, color = "grey25") +
+  annotate("text", x = 5.2, y = ymin_ref, label = "Min", hjust = 0, size = 3.1, color = "grey25") +
+  # ---  axes ---
+  scale_x_continuous(breaks = sort(unique(df$Hour)), expand = expansion(mult = c(0.05, 0.15))) +
+  scale_y_continuous(limits = c(5, 20), breaks = seq(5, 20, by = 5), expand = expansion(mult = c(0.05, 0.08))) +
+  scale_color_manual(values = pal)+
+  labs(x = "Hour", y = "Spherulites Concentration by Sample\n(millions/g of sediment)",
+    color = "SampleNo") +
+  # ---  theme & Legend ---
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank())
+
+#plot_a
+
+# ---- plot B ----
+
+# summary stats
+df2 <- df %>%
+  group_by(Hour) %>%
+  summarise(
+    Avg = mean(MillionsPer1g, na.rm = TRUE),
+    SD   = sd(MillionsPer1g, na.rm = TRUE),
+    n = sum(!is.na(MillionsPer1g)))
+
+plot_b <- ggplot(df2, aes(x = Hour, y = Avg)) +
+  # --- reference data ---
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = mu - sd0, ymax = mu + sd0,
+           alpha = 0.08, fill = "grey30") +
+  geom_hline(yintercept = mu, linewidth = 0.8, alpha = 0.35, color = "grey30") +
+  geom_hline(yintercept = c(ymin_ref, ymax_ref),
+             linetype = "dotted", linewidth = 0.7, alpha = 0.35, color = "grey30") +
+  # --- reference labels ---
+  annotate("text", x = 5.1, y = mu, label = "Mean", hjust = 0, size = 3.3, color = "grey25") +
+  annotate("text", x = 5.1, y = mu + sd0, label = "+1 SD", hjust = 0, size = 3.1, color = "grey25") +
+  annotate("text", x = 5.1, y = mu - sd0, label = "-1 SD", hjust = 0, size = 3.1, color = "grey25") +
+  annotate("text", x = 5.1, y = ymax_ref, label = "Max", hjust = 0, size = 3.1, color = "grey25") +
+  annotate("text", x = 5.1, y = ymin_ref, label = "Min", hjust = 0, size = 3.1, color = "grey25") +
+  # ---  axes ---
+  scale_x_continuous(breaks = sort(unique(df2$Hour)), expand = expansion(mult = c(0.05, 0.15))) +
+  scale_y_continuous(limits = c(5, 20), breaks = seq(5, 20, by = 5), expand = expansion(mult = c(0.05, 0.08))) + 
+  # --- plot data ---
+  geom_errorbar(aes(ymin = Avg - SD, ymax = Avg + SD), width = 0.15, linewidth = 0.5,
+    alpha = 0.6,na.rm = TRUE) +
+  geom_line(linewidth = 0.5) +
+  geom_point(size = 2.9, shape = 21, fill = "black") +
+  # ---  theme & Legend ---
+  theme_bw(base_size = 12) + 
+  labs(x = "Hour", y = "Average Spherultie Concentration\n(millions/g of sediment)") +
+  theme(panel.grid.minor = element_blank(), panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank())
+
+#plot_b
+
+# ---- merge & export plots A & B ----
+stacked_plot2 <- plot_grid(plot_b,plot_a, labels = c("A", "B"), ncol = 2, align = "v", rel_heights = c(1, 1))
+
+stacked_plot2
+```
+
+## Table A.2
+
+```{r TableA2}
+
+df <- read.csv("TableA.1.csv")
+
+stats <- list(Avg = ~mean(.x), SD  = ~sd(.x),  Min = ~min(.x), Max = ~max(.x))
+
+replicate_means <- df %>%
+  group_by(Sample, Method, Replicate) %>%
+  summarise(MillionsPer1g = mean(MillionsPer1g),RelativePer1g = mean(RelativePer1g),
+    .groups = "drop")
+
+summary_stats <- replicate_means %>%
+  group_by(Sample, Method) %>%
+  summarise(n_reps = n(),across(c(MillionsPer1g, RelativePer1g), stats, .names = "{fn}_{.col}"),
+    .groups = "drop") %>%
+  mutate(
+    Range_Millions = Max_MillionsPer1g - Min_MillionsPer1g,
+    CV_Millions = 100 * SD_MillionsPer1g / Avg_MillionsPer1g,
+    Range_Relative = Max_RelativePer1g - Min_RelativePer1g,
+    CV_Relative = 100 * SD_RelativePer1g / Avg_RelativePer1g)
+
+summary_stats_t <- summary_stats %>%
+  pivot_longer(-c(Sample, Method), names_to = "Metric", values_to = "Value") %>%
+  unite(SampleMethod, Sample, Method, sep = " | ") %>%
+  pivot_wider(names_from = SampleMethod, values_from = Value)
+
+y_by_sample <- summary_stats %>%
+  group_by(Sample) %>%
+  summarise(Y = Avg_RelativePer1g[Method == "16 CB"] / (Avg_MillionsPer1g[Method == "16 SPT"] * 1e6),
+    .groups = "drop")
+
+y_row <- y_by_sample %>% pivot_wider(names_from = Sample, values_from = Y) %>% mutate(Metric = "Y", .before = 1)
+
+y_summary_rows <- y_by_sample %>%
+  summarise(
+    `Y Average (all samples)` = mean(Y),
+    `Standard Deviation` = sd(Y),
+    `Minimum` = min(Y),
+    `Maximum` = max(Y),
+    `Range` = max(Y) - min(Y),
+    `Coefficient of Variation (CV, %)` = 100 * sd(Y) / mean(Y)) %>%
+  pivot_longer(everything(), names_to = "Metric", values_to = "Summary")
+
+final_table <- bind_rows(summary_stats_t, y_row, y_summary_rows)
+#final_table
+
+write_xlsx(final_table , "TableA.2.xlsx")
+```
+
+## Table A.3
+
+```{r TableA3}
+replicate_means <- df %>%
+  group_by(Sample, Method, Replicate) %>%
+  summarise(
+    MillionsPer1g = mean(MillionsPer1g, na.rm = TRUE),
+    RelativePer1g = mean(RelativePer1g, na.rm = TRUE),
+    .groups = "drop")
+
+# --- Factors ---
+y        <- 0.005309
+y_sd     <- 0.000804
+ratio10  <- 0.006599526 / 0.004124704
+
+replicate_means2 <- replicate_means %>%
+  group_by(Sample) %>%   # 16 SPT mean/SD computed per sample
+  mutate(
+    # CB conversions (per row) ----
+    Conv_16CB_mean = if_else(Method == "16 CB", (RelativePer1g / y) / 1e6, NA_real_),
+    Conv_16CB_minus1SD = if_else(Method == "16 CB",(RelativePer1g / (y + y_sd)) / 1e6, NA_real_),
+    Conv_16CB_plus1SD = if_else(Method == "16 CB",(RelativePer1g / (y - y_sd)) / 1e6, NA_real_),
+    Conv_10CB_mean = if_else(Method == "10 CB", ((RelativePer1g * (ratio10)) / y) / 1e6, NA_real_),
+    Conv_10CB_minus1SD = if_else(Method == "10 CB", ((RelativePer1g * (ratio10)) / (y + y_sd)) / 1e6, NA_real_),
+    Conv_10CB_plus1SD = if_else(Method == "10 CB", ((RelativePer1g * (ratio10)) / (y - y_sd)) / 1e6, NA_real_),
+    
+    # 16 SPT range (per Sample): mean ± 1 SD
+    # Only populate on rows that have a conversion value
+    has_any_conv = !is.na(Conv_16CB_mean) | !is.na(Conv_10CB_mean),
+    mean_16SPT = if_else(has_any_conv,
+                         mean(MillionsPer1g[Method == "16 SPT"], na.rm = TRUE), NA_real_),
+    low_16SPT = if_else(has_any_conv,
+                        mean(MillionsPer1g[Method == "16 SPT"], na.rm = TRUE) -
+                          sd(MillionsPer1g[Method == "16 SPT"], na.rm = TRUE), NA_real_),
+    high_16SPT = if_else(has_any_conv,
+                         mean(MillionsPer1g[Method == "16 SPT"], na.rm = TRUE) +
+                           sd(MillionsPer1g[Method == "16 SPT"], na.rm = TRUE), NA_real_),
+    # OVERLAP FLAGS FIRST (TRUE/FALSE)
+    overlap_Yconv_vs_16SPT = if_else(
+      !is.na(Conv_16CB_minus1SD) & !is.na(Conv_16CB_plus1SD) & !is.na(low_16SPT) & !is.na(high_16SPT),
+      !(Conv_16CB_plus1SD < low_16SPT | Conv_16CB_minus1SD > high_16SPT), NA),
+    overlap_Yconv10_vs_16SPT = if_else(
+      !is.na(Conv_10CB_minus1SD) & !is.na(Conv_10CB_plus1SD) & !is.na(low_16SPT) & !is.na(high_16SPT),
+      !(Conv_10CB_plus1SD < low_16SPT | Conv_10CB_minus1SD > high_16SPT), NA),
+    # GAP AMOUNT (only if they DO NOT overlap)
+    # and whether conversion range is ABOVE or BELOW 16 SPT range
+    gap_amt_Yconv_vs_16SPT = if_else(overlap_Yconv_vs_16SPT == FALSE,
+                                     case_when(
+                                       Conv_16CB_plus1SD < low_16SPT  ~ low_16SPT - Conv_16CB_plus1SD,   # conversion is below SPT
+                                       Conv_16CB_minus1SD  > high_16SPT ~ Conv_16CB_minus1SD - high_16SPT,   # conversion is above SPT
+                                       TRUE ~ 0), NA_real_),
+    gap_dir_Yconv_vs_16SPT = if_else(overlap_Yconv_vs_16SPT == FALSE,
+                                     case_when(Conv_16CB_plus1SD < low_16SPT  ~ "below", Conv_16CB_minus1SD  > high_16SPT ~ "above",
+                                               TRUE ~ NA_character_), NA_character_),
+    gap_amt_Yconv10_vs_16SPT = if_else(overlap_Yconv10_vs_16SPT == FALSE,
+                                       case_when(Conv_10CB_plus1SD < low_16SPT  ~ low_16SPT - Conv_10CB_plus1SD,
+                                                 Conv_10CB_minus1SD  > high_16SPT ~ Conv_10CB_minus1SD - high_16SPT, TRUE ~ 0), NA_real_),
+    gap_dir_Yconv10_vs_16SPT = if_else(overlap_Yconv10_vs_16SPT == FALSE,
+                                       case_when(Conv_10CB_plus1SD < low_16SPT  ~ "below",
+                                                 Conv_10CB_minus1SD  > high_16SPT ~ "above", TRUE ~ NA_character_),NA_character_)
+  ) %>%
+  ungroup() %>%
+  select(-has_any_conv)
+
+replicate_meansA3 <- replicate_means2 %>%
+  filter(Method %in% c("10 CB", "16 CB"))
+
+#replicate_meansA3
+write_xlsx(replicate_meansA3, "TableA.3.xlsx")
+```
